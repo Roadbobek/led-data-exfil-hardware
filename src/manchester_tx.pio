@@ -1,0 +1,94 @@
+; Manchester Transmitter for Optical Data Exfiltration
+; ----------------------------------------------------
+; LSB (Least Significant Bit)
+; Speed: Target 10Hz (10 bits per second)
+; Logic: Manchester Encoding (1 = L->H, 0 = H->L)
+; Hardware: Raspberry Pi Pico (PIO0, SM0) on Pin 14
+
+
+.program manchester_tx
+.side_set 1
+
+.wrap_target
+    pull block          side 0      ; Sleep here until C++ pushes a byte; keep LED OFF
+bit_loop:
+    out x, 1            side 0      ; Grab 1 bit from the 8-bit byte; keep LED OFF
+    jmp !x do_zero      side 0      ; If bit is 0, jump to do_zero; else continue to do_one
+
+do_one:
+    ; --- First Half: LOW ---
+    set y, 31           side 0      ; Reset counter to 31
+lp1: jmp y-- lp1        side 0 [15] ; Inner loop: (31 + 1) * 16 cycles = 512 cycles LOW
+    
+    ; --- Second Half: HIGH ---
+    set y, 31           side 1      ; Reset counter to 31
+lp2: jmp y-- lp2        side 1 [15] ; Inner loop: (31 + 1) * 16 cycles = 512 cycles HIGH
+    jmp next_bit        side 1      ; Bit finished; jump to check if byte is done
+
+do_zero:
+    ; --- First Half: HIGH ---
+    set y, 31           side 1      ; Reset counter to 31
+lp3: jmp y-- lp3        side 1 [15] ; Inner loop: (31 + 1) * 16 cycles = 512 cycles HIGH
+    
+    ; --- Second Half: LOW ---
+    set y, 31           side 0      ; Reset counter to 31
+lp4: jmp y-- lp4        side 0 [15] ; Inner loop: (31 + 1) * 16 cycles = 512 cycles LOW
+
+next_bit:
+    jmp !osre bit_loop  side 0      ; If we haven't sent all 8 bits, go to next bit
+.wrap
+
+
+
+// No delay:
+
+// .program manchester_tx
+// .side_set 1
+
+// .wrap_target
+//     pull block          side 0      ; Force LED OFF while waiting for C++
+// bit_loop:
+//     out x, 1            side 0      ; Keep OFF during the shift
+//     jmp !x do_zero      side 0      ; Keep OFF during the decision
+
+// do_one:
+//     nop                 side 0 [7]  ; First half: LOW
+//     jmp check_empty     side 1 [7]  ; Second half: HIGH
+
+// do_zero:
+//     nop                 side 1 [7]  ; First half: HIGH
+//     nop                 side 0 [7]  ; Second half: LOW
+
+// check_empty:
+//     jmp !osre bit_loop  side 0      ; Keep OFF while jumping to next bit
+// .wrap
+
+
+
+// Manchester TX PIO program from the Raspberry Pi Pico SDK
+// LSB (Least Significant Bit)
+% c-sdk {
+static inline void manchester_tx_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = manchester_tx_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_sideset_pins(&c, pin);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    
+    // Shift right, NO autopull, threshold 8 bits
+    sm_config_set_out_shift(&c, true, false, 8);
+    
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
+
+
+
+
+// To use the program, you use the function pio_sm_put_blocking(). This is like putting a letter in a mailbox.
+
+// pio: Which PIO block you're using.
+// sm: Which "brain" (state machine) inside that block is running the code.
+// data: The byte you want to blink.
+
+// For example: pio_sm_put_blocking(pio0, 0, myByte);
